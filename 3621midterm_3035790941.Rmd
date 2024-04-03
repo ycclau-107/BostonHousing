@@ -1,0 +1,413 @@
+---
+title: "Midterm Report of STAT3621 Statistical Data Analysis"
+author: "Lau Yan Chun Chris"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+# Environment Set Up
+```{r setup, echo = T}
+setwd("/Users/ycclau/Desktop/Academic/STAT3621/Assignment/A2")
+
+libraries <- c("mlbench","ggpubr","corrplot", "viridis", "leaps", "glmnet","car")
+
+importLibrary <- function(library_name) {
+  if (!require(library_name, character.only = TRUE)) {
+    install.packages(library_name)
+    library(library_name, character.only = TRUE)
+  }
+}
+
+for(library_name in libraries){
+  importLibrary(library_name)
+}
+
+if (!require(tidyverse)) { install.packages("tidyverse")
+  library(ggplot2)
+  library(dplyr)
+}
+```
+# Data loading & Checking for NA, Null value
+```{r echo = T}
+data("BostonHousing")
+summary(BostonHousing)
+
+data <- BostonHousing
+
+#Check NA & Null value
+cat("dimension of the dataset:",dim(data),"\n")
+cat("Number of NA in dataset:",sum(is.na(data)),"\nNumber of Null in dataset: ",sum(is.null(data)))
+```
+
+# Understanding the Data 
+
+##Univarate EDA
+```{r echo = T}
+var.names <- names(data)
+univarate.plots.list <- list()
+
+for (i in 1:length(var.names)) {
+  plt <- ggplot(data = data, aes(x = .data[[var.names[i]]]))
+  
+  # Check if the variable is discrete
+  if (is.factor(data[[var.names[i]]])) {
+    plt <- plt + geom_bar(fill = "skyblue", stat = "count", width = 0.5, alpha = 0.8)
+  } else {
+    plt <- plt + geom_density(color = "darkblue", fill = "skyblue", alpha = 0.5)
+  }
+  
+  univarate.plots.list <- c(univarate.plots.list, list(plt))
+}
+
+univarate.plots <- ggarrange(plotlist = univarate.plots.list, 
+                             ncol = 4, nrow = 4)
+
+annotate_figure(univarate.plots, 
+                top = text_grob("Univariate Analysis for BostonHousing dataset", 
+                size = 14))
+```
+
+## Correlation for non-binary variables
+```{r echo = T}
+data.wo.chas <- as.data.frame(data)
+data.wo.chas[["chas"]] <- NULL
+
+data.wo.chas.cor = cor(data.wo.chas)
+corrplot(data.wo.chas.cor, 
+         method = "ellipse", 
+         title = "Correlation table for BostonHousing (w/out chas)",
+         mar = c(0,0,1,0),
+         order = 'hclust'
+         )
+```
+
+## Relationship of variables and binary variable ```chas```
+
+###Distribution of ```chas```
+```{r echo = T}
+table(data$chas)
+```
+
+### Boxplots for variables versus ```chas```
+```{r echo = T}
+chas.boxplots.list = list()
+
+for (i in 1:length(var.names)){
+  if (var.names[i] == "chas"){next}
+  
+  plt <- ggplot(data, aes(x = chas, y = .data[[var.names[i]]],fill = chas)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    theme(legend.position="none") +
+    scale_color_brewer(palette="BuPu")
+  
+  chas.boxplots.list <- c(chas.boxplots.list, list(plt))
+}
+
+chas.boxplots <- ggarrange(plotlist = chas.boxplots.list, 
+                          ncol = 7, nrow = 2)
+
+annotate_figure(chas.boxplots, 
+                top = text_grob("Boxplot for variables by Factor chas", 
+                size = 14))
+```
+
+### Wilcoxon Rank Sum Test
+```{r echo = T}
+print("Wilcoxon Rank Sum Test for variables by chas")
+chas.wilcox.results = list()
+chas.diff.list = list()
+for (i in 1:length(var.names)){
+  if(var.names[i] == "chas"){next}
+  
+  control <- "chas"
+  target <- as.formula(paste(var.names[i], "~", control))
+  
+  result <- wilcox.test(target, data = data)
+  
+  title <- result$data.name
+  W <- result$statistic
+  p <- result$p.value
+  H0_accepted <- TRUE
+  if( p < 0.05){
+    H0_accepted <- FALSE
+    chas.diff.list <- c(chas.diff.list, list(var.names[[i]]))
+  }
+  cat(title,"\n","W:",W,"\t", "p-value:",p,"\t","H0 accepted?(No diff.)", H0_accepted, "\n")
+}
+```
+####Desity plot for variables that ```chas``` matters
+```{r echo = T}
+
+chas.diff.plts.list <- list()
+for(i in 1:length(chas.diff.list)){
+  var_name <- chas.diff.list[[i]]
+  plt <- ggplot(data, aes(x = .data[[var_name]], color = chas, fill = chas)) +
+    geom_density(alpha = 0.3)
+    chas.diff.plts.list <- c(chas.diff.plts.list, list(plt))
+}
+
+chas.diff.plts <- ggarrange(plotlist = chas.diff.plts.list, 
+                             ncol = 1, nrow = 3)
+annotate_figure(chas.diff.plts, 
+                top = text_grob("Density Comparison of Variables by chas Factor", 
+                size = 14))
+```
+
+# Statement of the problem
+1. Prediction of ```medv``` using linear regression model
+
+## variable distributions versus ```meddv``` without outliers
+```{r echo = T}
+medv.scatter.list <- list()
+
+for (i in 1:length(var.names)){
+  if (var.names[i] == "chas" || var.names[i] == "medv"){next}
+  
+  formula <- as.formula(paste("medv ~", var.names[i]))
+  model <- lm(formula, data = data)
+  cooksd <- cooks.distance(model)
+  cooksd_threshold <- 4 / length(cooksd)
+  outliers <- which(cooksd > cooksd_threshold)
+  data_focus <- data[-outliers,]
+
+  
+  plt <- ggplot(data_focus, aes(x = .data[[var.names[i]]], y = medv)) +
+    geom_point(color = "aquamarine3", alpha = 0.8, size = 0.5) +
+    geom_point(color = "cyan4", alpha = 0.8, size = 0.2) + 
+    geom_smooth(method = "lm", se = FALSE, color = "skyblue", alpha = 0.8)
+    
+  medv.scatter.list <- c(medv.scatter.list, list(plt))
+}
+
+medv.scatter <- ggarrange(plotlist = medv.scatter.list, 
+                          ncol = 4, nrow = 3)
+annotate_figure(medv.scatter, top = "SLR for variables versus medv")
+```
+
+```{r echo = T}
+
+ResidualPlot <- function(model, xlab, title = ""){
+  plt <-ggplot(model, aes(x= .fitted, y = .resid)) +
+      geom_point(color = "darkblue", alpha = 0.8, size = 0.5) +
+      geom_point(color = "skyblue", alpha = 0.8, size = 0.2) +
+      geom_hline(yintercept = 0) +
+      geom_smooth(method = "loess", alpha = 0.5, color = "black") +
+      xlab(xlab)
+    
+  return(plt)
+}
+
+medv.resid.list <- list()
+
+for (name in var.names){
+  if (name == "chas" || name == "medv"){next}
+  
+  formula <- as.formula(paste("medv ~", name))
+  model <- lm(formula, data = data)
+  plt <- ResidualPlot(model, xlab = paste("~",name))
+  medv.resid.list <- c(medv.resid.list, list(plt))
+}
+
+medv.resid <- ggarrange(plotlist = medv.resid.list, 
+                          ncol = 4, nrow = 3)
+
+annotate_figure(medv.resid, top = "Residual Plot for variables")
+```
+### Log-transformation
+```{r echo = T}
+
+logResidualPlot <- function(name, data){
+  df <- data.frame(data$medv, sapply(data[[name]],log10))
+  colnames(df)[1] <- "medv"
+  model <- lm(medv ~., data = df)
+  plt <- ResidualPlot(model, xlab = paste("~log_",name))
+  return(plt)
+}
+crim.log <- logResidualPlot("crim", data)
+rad.log <- logResidualPlot("rad", data)
+tax.log <- logResidualPlot("tax", data)
+
+
+log.list <- ggarrange(plotlist = list(crim.log, rad.log, tax.log), 
+                          ncol = 3, nrow = 3)
+
+annotate_figure(log.list, top = "Residual Plot for log(features)")
+
+```
+
+### Polynomial Approach
+```{r echo = T}
+
+showPolyPlot <- function(name, data){
+  df.x1 <- data.frame(medv = data$medv, data[[name]])
+  df.x2 <- data.frame(medv =data$medv, data[[name]], 
+                      sapply(data[[name]],function(x) x**2))
+  df.x3 <- data.frame(medv =data$medv, data[[name]], 
+                      sapply(data[[name]],function(x) x**2),
+                      sapply(data[[name]],function(x) x**3))
+  df.x4 <- data.frame(medv =data$medv, data[[name]], 
+                      sapply(data[[name]],function(x) x**2),
+                      sapply(data[[name]],function(x) x**3),
+                      sapply(data[[name]],function(x) x**4))
+  df.x5 <- data.frame(medv =data$medv, data[[name]], 
+                      sapply(data[[name]],function(x) x**2),
+                      sapply(data[[name]],function(x) x**3),
+                      sapply(data[[name]],function(x) x**4),
+                      sapply(data[[name]],function(x) x**5))
+  df.x6 <- data.frame(medv =data$medv, data[[name]], 
+                      sapply(data[[name]],function(x) x**2),
+                      sapply(data[[name]],function(x) x**3),
+                      sapply(data[[name]],function(x) x**4),
+                      sapply(data[[name]],function(x) x**5),
+                      sapply(data[[name]],function(x) x**6))
+  
+  df.xList <- list(df.x1, df.x2, df.x3, df.x4, df.x5, df.x6)
+  plt.list <- list()
+  i = 1
+  for(xn in df.xList){
+    model <- lm(medv ~., data = xn)
+
+    plt <- ResidualPlot(model, xlab = paste0("T_",i,"(",name,")"))
+    plt.list <- c(plt.list, list(plt))
+    i <- i + 1
+  }
+  
+  plt.group <- ggarrange(plotlist = plt.list, 
+                          ncol = 3, nrow = 2)
+
+  annotate_figure(plt.group, top = paste0("Residual Plot for Poly.T {1to6} of ",name))
+}
+```
+
+```{r echo = T}
+showPolyPlot("crim", data)
+showPolyPlot("rm", data)
+showPolyPlot("ptratio", data)
+showPolyPlot("lstat", data)
+```
+## Analysis method
+```{r echo = T}
+
+performSubsetSelection <- function(data, method, nmax = 13) {
+  subset <- regsubsets(medv ~ ., data = data, method = method, nvmax = nmax)
+  
+  # Print the method name
+  cat("Method:", method, "\n")
+  
+  # Print summary statistics
+  summary <- summary(subset)
+  cat("R2_adj:\n")
+  print(summary$adjr2)
+  cat("max. R2_adj: ",max(summary$adjr2), "Model suggested:",which.max(summary$adjr2),"\n")
+  
+  cat("Mallows' Cp:\n")
+  print(summary$cp)
+  cat("Diff. of measured and theoretical value:\n")
+  Cp.theorical <- 1:nmax
+  Cp.diff <- summary$cp - Cp.theorical
+  print(round(Cp.diff, 5))
+  cat("min. diff. Cp: ",min(Cp.diff), "Model suggested:",which.min(Cp.diff),"\n")
+  
+  cat("BIC:\n")
+  print(summary$bic)
+  cat("min. BIC: ",min(summary$bic), "Model suggested:",which.min(summary$bic),"\n")
+
+  return(summary)
+}
+
+models.ex <- performSubsetSelection(data, "exhaustive")
+```
+
+## best model without any transformation with exhaustive method
+```{r echo = T}
+##change the position of binary list since medv locates at the end in dataset
+##only for the original data frame
+model.best <- models.ex$which[11, ]
+model.best <- model.best[-1]
+model.best <- c(model.best, TRUE)
+
+model.best.data <- data[model.best]
+
+model.m1 <- lm(medv ~., data =model.best.data)
+summary(model.m1)
+```
+
+## Residual Analysis
+```{r echo = T}
+ResidualPlot(model.m1, xlab = "X_m1(p=11)")
+```
+## Dealing with non-linearity
+```{r echo =T}
+crim.x2 <-sapply(data$crim, function(x,n) x**n, 2)
+crim.x3 <-sapply(data$crim, function(x,n) x**n, 3)
+rm.x2 <- sapply(data$rm, function(x,n) x**n, 2)
+rm.x3 <- sapply(data$rm, function(x,n) x**n, 3)
+rad.log <- sapply(data$rad, log10)
+tax.log <- sapply(data$tax, log10)
+ptratio.x2 <- sapply(data$ptratio, function(x,n) x**n, 2)
+ptratio.x3 <- sapply(data$ptratio, function(x,n) x**n, 3)
+ptratio.x4 <- sapply(data$ptratio, function(x,n) x**n, 4)
+lstat.x2 <- sapply(data$lstat, function(x,n) x**n, 2)
+lstat.x3 <- sapply(data$lstat, function(x,n) x**n, 3)
+lstat.x4 <- sapply(data$lstat, function(x,n) x**n, 4)
+
+data.trans <- data.frame(medv = data$medv,
+                         crim = data$crim, crim.x2, crim.x3,
+                         zn = data$zn,
+                         chas = data$chas,
+                         nox = data$nox,
+                         rm = data$rm, rm.x2, rm.x3,
+                         dis = data$dis,
+                         rad.log,
+                         tax.log,
+                         ptratio = data$ptratio, ptratio.x2, ptratio.x3, ptratio.x4,
+                         b = data$b,
+                         lstat = data$lstat, lstat.x2, lstat.x3, lstat.x4)
+
+print(dim(data.trans))
+```
+```{r echo = T}
+models.trans <- performSubsetSelection(data.trans, "exhaustive", nmax = 20)
+```
+
+
+## Multicollinearity
+```{r echo = T}
+data.trans.m1 <- data.trans[models.trans$which[17,]]
+model.trans.m1 <- lm(medv ~ ., data = data.trans.m1)
+
+vif <- 1 / vif(model.trans.m1)
+
+threshold <- 5
+
+if(any(vif) > threshold){
+  print("Multicollinearity attention is raised.")
+} else{
+  cat("No multicollinearity is greater than threshold.\n")
+}
+
+print(vif)
+```
+
+```{r echo = T}
+model.trans.m1$coefficients
+ResidualPlot(model.trans.m1, xlab = "T_{17}(X)")
+```
+### Principal components analysis (PCA) for data visualization
+```{r echo = T}
+predictors <- model.matrix(model.trans.m1)[,-1]
+predictors.wo.b0 <- predictors[,-1]
+pca.result <- prcomp(predictors.wo.b0, scale. = TRUE)
+pca.scaled.vec <- as.data.frame(predict(pca.result, newdata = predictors)[, 1:2])
+
+pca.scaled.vec$medv_pca <- data$medv
+
+ggplot(pca.scaled.vec, aes(x = PC1, y = PC2, color = medv_pca)) +
+  geom_point() +
+  ggtitle(" medv model visalized by PCA (dim = 2) ")
+```
+
+
+
+
+
